@@ -12,6 +12,7 @@ bot_log.txt
 .idea/
 __pycache__/
 *.pyc
+.venv_release/
 
 # ========================
 # 3. 屏蔽打包的临时过程文件和内部资源

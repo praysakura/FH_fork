@@ -90,7 +90,7 @@ LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
-CURRENT_VERSION = "1.2.0"
+CURRENT_VERSION = "1.2.1"
 APP_DISPLAY_NAME = "FH6Auto Fork"
 APP_ATTRIBUTION = "Based on YOUSTHEONE/FH6Auto"
 UPSTREAM_REPO_URL = "https://github.com/YOUSTHEONE/FH6Auto"
@@ -441,6 +441,31 @@ class FH_UltimateBot(ctk.CTk):
         except Exception:
             next_after_cj = int(self.config.get("next_3", 4))
         return next_after_cj == 4
+
+    def format_delay_text(self, value):
+        return f"{float(value):.2f}s"
+
+    def get_ui_delay_scale(self):
+        try:
+            if hasattr(self, "slider_ui_delay"):
+                return max(0.5, float(self.slider_ui_delay.get()))
+        except Exception:
+            pass
+        return max(0.5, float(self.config.get("ui_delay_scale", 1.0)))
+
+    def get_post_get_in_car_delay(self):
+        try:
+            if hasattr(self, "slider_post_get_in_car"):
+                return max(0.3, float(self.slider_post_get_in_car.get()))
+        except Exception:
+            pass
+        return max(0.3, float(self.config.get("post_get_in_car_delay", 0.5)))
+
+    def sleep_ui(self, base_seconds):
+        time.sleep(max(0.05, float(base_seconds) * self.get_ui_delay_scale()))
+
+    def sleep_post_get_in_car(self):
+        time.sleep(self.get_post_get_in_car_delay())
     # ==========================================
     # --- 初始化全局 Region ---
     # ==========================================
@@ -485,7 +510,9 @@ class FH_UltimateBot(ctk.CTk):
             "share_code": "179383666",
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190", 
-            "sell_mode": 1 
+            "sell_mode": 1,
+            "ui_delay_scale": 1.0,
+            "post_get_in_car_delay": 0.5
         }
         ext_path = USER_CONFIG_FILE
         # 2. 读取用户的 config.json，并与底本合并（自动补全缺失项）
@@ -533,6 +560,13 @@ class FH_UltimateBot(ctk.CTk):
         self.config["chk_4"] = self.var_chk4.get()
         self.config["auto_restart"] = self.var_auto_restart.get()
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
+        try:
+            if hasattr(self, "slider_ui_delay"):
+                self.config["ui_delay_scale"] = round(float(self.slider_ui_delay.get()), 2)
+            if hasattr(self, "slider_post_get_in_car"):
+                self.config["post_get_in_car_delay"] = round(float(self.slider_post_get_in_car.get()), 2)
+        except Exception:
+            pass
         try:
             if hasattr(self, "entry_calc_a"):
                 self.config["calc_a"] = self.entry_calc_a.get().strip()
@@ -912,6 +946,53 @@ class FH_UltimateBot(ctk.CTk):
         #self.btn_test_boot.pack(side="left", padx=(0, 20))
         
         # =================================
+
+        self.delay_settings_frame = ctk.CTkFrame(self, fg_color="#2B2B2B", height=58, corner_radius=10)
+        self.delay_settings_frame.pack(fill="x", padx=18, pady=(10, 0))
+        self.delay_settings_frame.pack_propagate(False)
+
+        ctk.CTkLabel(
+            self.delay_settings_frame,
+            text="关键时序设置",
+            font=ctk.CTkFont(weight="bold", size=15),
+            text_color="#60A5FA"
+        ).pack(side="left", padx=(15, 18))
+
+        ctk.CTkLabel(self.delay_settings_frame, text="上车后等待:").pack(side="left", padx=(0, 6))
+        self.lbl_post_get_in_car_value = ctk.CTkLabel(
+            self.delay_settings_frame,
+            text=self.format_delay_text(self.config.get("post_get_in_car_delay", 0.5)),
+            width=46
+        )
+        self.lbl_post_get_in_car_value.pack(side="left", padx=(0, 6))
+        self.slider_post_get_in_car = ctk.CTkSlider(
+            self.delay_settings_frame,
+            from_=0.3,
+            to=1.5,
+            number_of_steps=12,
+            width=150,
+            command=lambda v: self.lbl_post_get_in_car_value.configure(text=self.format_delay_text(v))
+        )
+        self.slider_post_get_in_car.set(float(self.config.get("post_get_in_car_delay", 0.5)))
+        self.slider_post_get_in_car.pack(side="left", padx=(0, 18))
+
+        ctk.CTkLabel(self.delay_settings_frame, text="界面等待倍率:").pack(side="left", padx=(0, 6))
+        self.lbl_ui_delay_value = ctk.CTkLabel(
+            self.delay_settings_frame,
+            text=f"{float(self.config.get('ui_delay_scale', 1.0)):.1f}x",
+            width=40
+        )
+        self.lbl_ui_delay_value.pack(side="left", padx=(0, 6))
+        self.slider_ui_delay = ctk.CTkSlider(
+            self.delay_settings_frame,
+            from_=0.5,
+            to=2.0,
+            number_of_steps=15,
+            width=150,
+            command=lambda v: self.lbl_ui_delay_value.configure(text=f"{float(v):.1f}x")
+        )
+        self.slider_ui_delay.set(float(self.config.get("ui_delay_scale", 1.0)))
+        self.slider_ui_delay.pack(side="left", padx=(0, 10))
 
 
         # ====== 新增：智能计算分配工具栏 (放在下方) ======
@@ -3450,6 +3531,35 @@ class FH_UltimateBot(ctk.CTk):
 
         return True
 
+    def find_race_skillcar_with_recheck(self, check_times=2, settle_delay=0.18):
+        """
+        Recheck the current visible car page a few times before deciding
+        it does not contain the target race car.
+        """
+        pos_target = None
+        for check_idx in range(max(1, int(check_times))):
+            if not self.is_running:
+                return None
+
+            pos_target = self.wait_for_image_with_element_multi(
+                "skillcar.png",
+                "liketag.png",
+                region=self.regions["全界面"],
+                main_threshold=0.75,
+                like_threshold=0.7,
+                final_threshold=0.7,
+                timeout=1.2,
+                interval=0.2,
+                fast_mode=True
+            )
+            if pos_target:
+                return pos_target
+
+            if check_idx < max(1, int(check_times)) - 1:
+                time.sleep(settle_delay)
+
+        return None
+
     def match_template_score(self, src, tpl):
         try:
             if tpl is None or src is None:
@@ -3554,17 +3664,8 @@ class FH_UltimateBot(ctk.CTk):
         self.hw_press("enter")
         time.sleep(2.0)
 
-        pos_target = self.wait_for_image_with_element_multi(
-            "skillcar.png",
-            "liketag.png",
-            region=self.regions["全界面"],
-            fast_mode=True,
-            main_threshold=0.75,
-            like_threshold=0.7,
-            final_threshold=0.7,
-            timeout=2,
-            interval=0.25
-        )
+        self.log("进入我的车辆后，先在当前页多次确认目标跑图车...")
+        pos_target = self.find_race_skillcar_with_recheck(check_times=3, settle_delay=0.22)
 
         if not pos_target:
             self.log("未找到带 liketag 的目标车辆，重新选品牌...")
@@ -3590,24 +3691,16 @@ class FH_UltimateBot(ctk.CTk):
                 self.log("三次尝试未找到刷图车辆品牌。")
                 return False
 
-            for _ in range(20):
+            for page_idx in range(20):
                 if not self.is_running:
                     return False
 
-                pos_target = self.wait_for_image_with_element_multi(
-                    "skillcar.png",
-                    "liketag.png",
-                    region=self.regions["全界面"],
-                    main_threshold=0.75,
-                    like_threshold=0.7,
-                    final_threshold=0.7,
-                    timeout=2,
-                    interval=0.25,
-                    fast_mode=True
-                )
+                check_times = 3 if page_idx == 0 else 2
+                pos_target = self.find_race_skillcar_with_recheck(check_times=check_times, settle_delay=0.18)
                 if pos_target:
                     break
 
+                self.log(f"当前车辆第 {page_idx + 1} 页未找到目标车，翻到下一页继续检查...")
                 for _ in range(4):
                     self.hw_press("right", delay=0.08)
                     time.sleep(0.08)
@@ -4047,7 +4140,7 @@ class FH_UltimateBot(ctk.CTk):
                 self.log("列表中未找到目标车辆，重置记忆页码。")
                 self.memory_car_page = 0 # 没找到说明车刷完了，清零记忆
                 return False
-            time.sleep(1.2)
+            self.sleep_ui(1.2)
             self.log("尝试寻找'上车'按钮...")
 
             pos_rc = None
@@ -4056,14 +4149,16 @@ class FH_UltimateBot(ctk.CTk):
             if pos_rc:
                 self.log("点击上车")
                 self.game_click(pos_rc)
-                time.sleep(2.0)  # 点击后等待上车加载
+                self.sleep_ui(2.0)  # 点击后等待上车加载
             else:
                 self.log("回车上车")
                 self.hw_press("enter")
-                time.sleep(1.0)
+                self.sleep_ui(1.0)
                 self.hw_press("enter")
-                time.sleep(1.0)
+                self.sleep_ui(1.0)
 
+            self.log(f"上车动画后额外等待 {self.get_post_get_in_car_delay():.2f}s，再查找升级与调教...")
+            self.sleep_post_get_in_car()
 
             pos_sjy = None
             for _ in range(20):
@@ -4075,14 +4170,14 @@ class FH_UltimateBot(ctk.CTk):
                     break
 
                 self.hw_press("esc")
-                time.sleep(0.5)
+                self.sleep_ui(0.5)
 
             if not pos_sjy:
                 self.log("找不到升级页面")
                 return False
 
             self.game_click(pos_sjy)
-            time.sleep(0.5)
+            self.sleep_ui(0.5)
 
             pos_cls = self.wait_for_any_image_gray(
                 ["clsldcnw.png", "clsldcnb.png"],
