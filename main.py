@@ -10,6 +10,7 @@ import shutil
 import ctypes
 import subprocess
 import webbrowser
+import traceback
 # ====== 【新增】：启动前置环境检测 (防闪退机制) ======
 def check_windows_dependencies():
     if sys.platform != "win32":
@@ -89,10 +90,12 @@ CONFIG_DIR = os.path.join(APP_DIR, "config")
 USER_CONFIG_FILE = os.path.join(APP_DIR, "config.json")      # <--- 全面替换为 config.json
 LOG_FILE = os.path.join(APP_DIR, "bot_log.txt")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
+DEBUG_DIR = os.path.join(APP_DIR, "debug")
+DEBUG_LOG_DIR = os.path.join(DEBUG_DIR, "logs")
 TEMPLATE_CACHE_FILE = os.path.join(CACHE_DIR, "template_cache.pkl")
 TEMPLATE_META_FILE = os.path.join(CACHE_DIR, "template_meta.json")
 LOCAL_VERSION_FILE = os.path.join(APP_DIR, "version.json")
-DEFAULT_CURRENT_VERSION = "1.2.2"
+DEFAULT_CURRENT_VERSION = "1.2.3"
 APP_DISPLAY_NAME = "FH6Auto Fork"
 APP_ATTRIBUTION = "Based on YOUSTHEONE/FH6Auto"
 DEFAULT_UPSTREAM_REPO_URL = "https://github.com/YOUSTHEONE/FH6Auto"
@@ -362,6 +365,24 @@ ctk.set_default_color_theme("blue")
 MATCH_THRESHOLD = 0.8
 pyautogui.FAILSAFE = False
 
+LOG_LEVEL_LABELS = {
+    "DEBUG": "调试",
+    "INFO": "信息",
+    "WARNING": "警告",
+    "ERROR": "错误",
+}
+
+STEP_LABELS = {
+    "idle": "空闲",
+    "system": "系统",
+    "race": "跑图",
+    "buy": "买车",
+    "cj": "超级抽奖",
+    "sell": "删车",
+    "boot": "自动开机测试",
+    "recovery": "断点恢复",
+}
+
 
 class FH_UltimateBot(ctk.CTk):
     def __init__(self):
@@ -390,7 +411,14 @@ class FH_UltimateBot(ctk.CTk):
         self.cj_counter = 0
         self.sc_count = 0
         self.global_loop_current = 0
+        self.global_loop_total = 0
         self.memory_car_page = 0
+        self.current_step_name = "idle"
+        self.current_phase_name = "初始化"
+        self.current_targets = {"race": 0, "buy": 0, "cj": 0, "sell": 0}
+        self.log_session_id = None
+        self.log_file_path = None
+        self.log_file_lock = threading.Lock()
 
         self.template_cache = {}
         self.scaled_template_cache = {}
@@ -505,6 +533,60 @@ class FH_UltimateBot(ctk.CTk):
 
     def sleep_post_get_in_car(self):
         time.sleep(self.get_post_get_in_car_delay())
+
+    def wait_for_share_code_input_ready(self):
+        is_xbox_platform = False
+        try:
+            if hasattr(self, "var_xbox_platform"):
+                is_xbox_platform = bool(self.var_xbox_platform.get())
+            else:
+                is_xbox_platform = bool(self.config.get("is_xbox_platform", False))
+        except Exception:
+            is_xbox_platform = bool(self.config.get("is_xbox_platform", False))
+
+        if not is_xbox_platform:
+            self.log("当前为普通平台模式，按 Enter 后固定等待 0.8s 再输入蓝图代码。")
+            time.sleep(0.8)
+            return True
+
+        self.log("已启用 Xbox 平台模式，按 Enter 后先缓冲 2.5s，再等待“共享代码”输入框出现...")
+        time.sleep(2.5)
+
+        template_path = get_img_path("xboxsharecode.png")
+        if not os.path.exists(template_path):
+            self.log("未找到 xboxsharecode.png，改为 Xbox 兜底固定等待 6.0s 后继续输入蓝图代码。")
+            time.sleep(6.0)
+            return True
+
+        center_region = self.regions.get("中间", self.regions.get("全界面"))
+        full_region = self.regions.get("全界面")
+
+        pos_ready = self.wait_for_image_gray(
+            "xboxsharecode.png",
+            region=center_region,
+            threshold=0.72,
+            timeout=18,
+            interval=0.25,
+            fast_mode=True
+        )
+        if not pos_ready:
+            self.log("中间区域暂未识别到 Xbox 分享代码输入框，扩大到全界面继续等待...")
+            pos_ready = self.wait_for_image_gray(
+                "xboxsharecode.png",
+                region=full_region,
+                threshold=0.72,
+                timeout=12,
+                interval=0.25,
+                fast_mode=True
+            )
+        if not pos_ready:
+            self.log("等待 Xbox 分享代码输入框超时（总计约 32.5s），改为兜底固定等待 6.0s 后继续输入蓝图代码。")
+            time.sleep(6.0)
+            return True
+
+        self.log("已识别到 Xbox 分享代码输入框，开始输入蓝图代码。")
+        time.sleep(0.2)
+        return True
     # ==========================================
     # --- 初始化全局 Region ---
     # ==========================================
@@ -547,6 +629,8 @@ class FH_UltimateBot(ctk.CTk):
             "global_loops": 10, 
             "skill_dirs": ["right", "up", "up", "up", "left"],
             "share_code": "179383666",
+            "is_xbox_platform": False,
+            "is_winter_season": False,
             "auto_restart": False,
             "restart_cmd": "start steam://run/2483190", 
             "sell_mode": 1,
@@ -597,6 +681,10 @@ class FH_UltimateBot(ctk.CTk):
         self.config["chk_2"] = self.var_chk2.get()
         self.config["chk_3"] = self.var_chk3.get()
         self.config["chk_4"] = self.var_chk4.get()
+        if hasattr(self, "var_xbox_platform"):
+            self.config["is_xbox_platform"] = self.var_xbox_platform.get()
+        if hasattr(self, "var_winter_season"):
+            self.config["is_winter_season"] = self.var_winter_season.get()
         self.config["auto_restart"] = self.var_auto_restart.get()
         self.config["restart_cmd"] = self.le_restart_cmd.get().strip()
         try:
@@ -770,6 +858,8 @@ class FH_UltimateBot(ctk.CTk):
         self.var_chk2 = ctk.BooleanVar(value=self.config["chk_2"])
         self.var_chk3 = ctk.BooleanVar(value=self.config["chk_3"])
         self.var_chk4 = ctk.BooleanVar(value=self.config.get("chk_4", True))
+        self.var_xbox_platform = ctk.BooleanVar(value=self.config.get("is_xbox_platform", False))
+        self.var_winter_season = ctk.BooleanVar(value=self.config.get("is_winter_season", False))
 
         box_race, self.btn_race, self.entry_race, self.lbl_race = create_box(
             self.config_frame,
@@ -782,6 +872,8 @@ class FH_UltimateBot(ctk.CTk):
         self.entry_share = ctk.CTkEntry(box_race, width=130, justify="center", placeholder_text="蓝图数字代码")
         self.entry_share.insert(0, self.config.get("share_code", "890169683"))
         self.entry_share.pack(pady=4)
+        self.cb_xbox_platform = ctk.CTkCheckBox(box_race, text="Xbox 平台", variable=self.var_xbox_platform, width=130)
+        self.cb_xbox_platform.pack(pady=(0, 4))
         self.btn_replace_skillcar = ctk.CTkButton(
             box_race,
             text="替换跑图车图",
@@ -945,6 +1037,13 @@ class FH_UltimateBot(ctk.CTk):
             self.opt_sell_mode.set("模式2: 移除最近添加")
             
         self.opt_sell_mode.pack(pady=4)
+        self.cb_winter_season = ctk.CTkCheckBox(
+            box_sc,
+            text="是否为冬季",
+            variable=self.var_winter_season,
+            width=180
+        )
+        self.cb_winter_season.pack(pady=(0, 4))
         # ==========================================
         self.next_frame4, self.entry_next4, self.chk4 = create_next_step(
         self.config_frame, self.var_chk4, self.config.get("next_4", 1)
@@ -1473,21 +1572,175 @@ class FH_UltimateBot(ctk.CTk):
 
         self.config["skill_dirs"] = valid_dirs
 
-    def log(self, message):
+    def get_module_label(self, step_name=None):
+        return STEP_LABELS.get(step_name or self.current_step_name, "系统")
+
+    def normalize_log_step(self, text):
+        if not text:
+            return ""
+
+        cleaned = str(text).strip()
+        cleaned = cleaned.strip(".。!！?？~ ")
+        cleaned = re.sub(r"^\[[^\]]+\]\s*", "", cleaned)
+        cleaned = re.sub(r"^[▶>]+", "", cleaned).strip()
+        if not cleaned:
+            return ""
+
+        parts = re.split(r"[：:（(，,。!！?？]", cleaned, maxsplit=1)
+        cleaned = parts[0].strip() if parts else cleaned
+        return cleaned[:24]
+
+    def infer_log_level(self, message, level=None):
+        if level:
+            return str(level).upper()
+
+        debug_markers = (
+            "[ImageMatch]",
+            "[GrayMatch]",
+            "[GrayMatchAny]",
+            "[ComboMatch]",
+            "[StableMatch]",
+            "[FastMatch]",
+            "[AlphaMatch]",
+            "[AlphaMatchAny]",
+            "[排他拦截]",
+            "[终极安全-通过]",
+            "[轮廓黑科技]",
+        )
+        if any(marker in message for marker in debug_markers):
+            return "DEBUG"
+
+        error_markers = ("异常", "致命错误", "严重警告", "Traceback")
+        if any(marker in message for marker in error_markers):
+            return "ERROR"
+
+        warning_markers = ("未找到", "未识别到", "超时", "失败", "警告", "重试")
+        if any(marker in message for marker in warning_markers):
+            return "WARNING"
+
+        return "INFO"
+
+    def refresh_run_targets(self):
+        def safe_int(entry_widget, fallback=0):
+            try:
+                return int(entry_widget.get())
+            except Exception:
+                return fallback
+
+        self.current_targets = {
+            "race": safe_int(self.entry_race, self.config.get("race_count", 0)),
+            "buy": safe_int(self.entry_car, self.config.get("buy_count", 0)),
+            "cj": safe_int(self.entry_cj, self.config.get("cj_count", 0)),
+            "sell": safe_int(self.entry_sc, self.config.get("sc_count", 0)),
+        }
+
+    def get_small_loop_progress(self):
+        counter_map = {
+            "race": self.race_counter,
+            "buy": self.car_counter,
+            "cj": self.cj_counter,
+            "sell": self.sc_count,
+        }
+        current = counter_map.get(self.current_step_name)
+        total = self.current_targets.get(self.current_step_name, 0)
+        if current is None or total <= 0:
+            return None
+        return current, total
+
+    def set_log_context(self, step_name=None, phase=None, total_loops=None):
+        if step_name:
+            self.current_step_name = step_name
+        if phase:
+            self.current_phase_name = self.normalize_log_step(phase) or str(phase)
+        if total_loops is not None:
+            self.global_loop_total = max(0, int(total_loops))
+
+    def ensure_debug_log_dir(self):
+        try:
+            os.makedirs(DEBUG_LOG_DIR, exist_ok=True)
+        except Exception:
+            pass
+
+    def start_run_log(self, entry_name):
+        self.ensure_debug_log_dir()
+        self.log_session_id = time.strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", entry_name or "run")
+        self.log_file_path = os.path.join(DEBUG_LOG_DIR, f"run-{self.log_session_id}-{safe_name}.log")
+
+        header_lines = [
+            "=" * 90,
+            f"会话开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"入口模块: {self.get_module_label(entry_name)}",
+            f"日志文件: {self.log_file_path}",
+            f"应用目录: {APP_DIR}",
+            f"Python版本: {sys.version.split()[0]}",
+            "=" * 90,
+        ]
+        for line in header_lines:
+            self._append_log_file_line(line)
+
+    def _append_log_file_line(self, line):
+        if not self.log_file_path:
+            return
+        try:
+            with self.log_file_lock:
+                with open(self.log_file_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except Exception:
+            pass
+
+    def log(self, message, level=None, step=None, module=None):
+        level_name = self.infer_log_level(message, level)
+
+        if step:
+            self.current_phase_name = self.normalize_log_step(step) or str(step)
+        elif level_name != "DEBUG":
+            inferred_step = self.normalize_log_step(message)
+            if inferred_step:
+                self.current_phase_name = inferred_step
+
+        module_label = self.get_module_label(module or self.current_step_name)
+        step_label = self.normalize_log_step(step) if step else self.current_phase_name or "未命名步骤"
+        level_label = LOG_LEVEL_LABELS.get(level_name, level_name)
         curr_time = time.strftime("%H:%M:%S")
-        full_msg = f"[{curr_time}] {message}"
+        full_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        loop_parts = []
+        if self.global_loop_current > 0 and self.global_loop_total > 0:
+            loop_parts.append(f"大循环 {self.global_loop_current}/{self.global_loop_total}")
+        small_loop = self.get_small_loop_progress()
+        if small_loop:
+            loop_parts.append(f"小循环 {small_loop[0]}/{small_loop[1]}")
+
+        ui_prefix_parts = [f"[{curr_time}]", f"[{module_label}]", f"[{step_label}]"]
+        if loop_parts:
+            ui_prefix_parts.append(f"[{' | '.join(loop_parts)}]")
+        ui_msg = " ".join(ui_prefix_parts) + f" {message}"
+
+        file_prefix_parts = [
+            f"[{full_time}]",
+            f"[{level_name}]",
+            f"[模块:{module_label}]",
+            f"[步骤:{step_label}]",
+        ]
+        if self.global_loop_current > 0 and self.global_loop_total > 0:
+            file_prefix_parts.append(f"[大循环:{self.global_loop_current}/{self.global_loop_total}]")
+        if small_loop:
+            file_prefix_parts.append(f"[小循环:{small_loop[0]}/{small_loop[1]}]")
+        file_msg = " ".join(file_prefix_parts) + f" {message}"
+        self._append_log_file_line(file_msg)
 
         def write_ui():
             try:
-                # 写入下方大界面的日志
+                if level_name == "DEBUG":
+                    return
                 self.log_box.configure(state="normal")
-                self.log_box.insert("end", full_msg + "\n")
+                self.log_box.insert("end", ui_msg + "\n")
                 self.log_box.see("end")
                 self.log_box.configure(state="disabled")
-                # 同时写入迷你界面的横向日志
                 if hasattr(self, "mini_log_box"):
                     self.mini_log_box.configure(state="normal")
-                    self.mini_log_box.insert("end", full_msg + "\n")
+                    self.mini_log_box.insert("end", ui_msg + "\n")
                     self.mini_log_box.see("end")
                     self.mini_log_box.configure(state="disabled")
             except Exception:
@@ -1781,6 +2034,12 @@ class FH_UltimateBot(ctk.CTk):
         self.cj_counter = 0
         self.sc_count = 0
         self.global_loop_current = 0
+        self.global_loop_total = 0
+        self.current_phase_name = "启动任务"
+        self.current_step_name = start_step
+        self.refresh_run_targets()
+        self.start_run_log(start_step)
+        self.log(f"本次详细日志文件: {self.log_file_path}", step="日志初始化", module="system")
 
         def runner():
             if not self.check_and_focus_game():
@@ -1794,9 +2053,11 @@ class FH_UltimateBot(ctk.CTk):
                 total_loops = int(self.entry_global_loop.get())
             except Exception:
                 total_loops = self.config.get("global_loops", 10)
+            self.set_log_context(step_name=start_step, phase="任务启动", total_loops=total_loops)
             self.global_loop_current = 1
             if hasattr(self, "lbl_mini_loop"):
                 self.ui_call(self.lbl_mini_loop.configure, text=f"大循环: {self.global_loop_current} / {total_loops}")
+            self.log(f"任务启动，入口模块: {self.get_module_label(start_step)}，计划大循环: {total_loops}", step="任务启动")
 
             # 【新增】：全局连续失败计数器
             continuous_failures = 0 
@@ -1806,6 +2067,8 @@ class FH_UltimateBot(ctk.CTk):
             while self.is_running:
                 step_name = steps[curr_idx]
                 success = False
+                self.set_log_context(step_name=step_name, phase="模块开始")
+                self.log(f"开始执行{self.get_module_label(step_name)}模块", step="模块开始")
 
                 try:
                     if step_name == "race":
@@ -1813,7 +2076,7 @@ class FH_UltimateBot(ctk.CTk):
                     elif step_name == "buy":
                         success = self.logic_buy_car(int(self.entry_car.get()))
                     elif step_name == "cj":
-                        success = self.logic_super_wheelspin(int(self.entry_cj.get()))
+                        success = self.logic_super_wheelspin_v2(int(self.entry_cj.get()))
                     elif step_name == "sell":
                         # ====== 【新增】：判断下拉框的模式 ======
                         sell_mode = self.opt_sell_mode.get()
@@ -1824,6 +2087,7 @@ class FH_UltimateBot(ctk.CTk):
                         # =========================================
                 except Exception as e:
                     self.log(f"执行模块 {step_name} 时异常: {e}")
+                    self._append_log_file_line(traceback.format_exc().rstrip())
                     success = False
 
                 if not self.is_running:
@@ -1848,6 +2112,7 @@ class FH_UltimateBot(ctk.CTk):
                 else:
                     # 只要这一个大步骤成功跑完了，就把连续失败次数清零，奖励它继续跑！
                     continuous_failures = 0
+                    self.log(f"{self.get_module_label(step_name)}模块执行完成", step="模块完成")
                 #v1.0.1
                 # ====== 核心流转与无限循环逻辑 ======
                 next_idx = curr_idx + 1 # 默认前往下一步
@@ -1907,6 +2172,8 @@ class FH_UltimateBot(ctk.CTk):
             return
 
         self.is_running = False
+        self.current_step_name = "system"
+        self.current_phase_name = "停止任务"
         self.is_paused = False  # <--- 【新增】彻底停止时必须解除暂停锁
 
         for key in DIK_CODES.keys():
@@ -1978,8 +2245,15 @@ class FH_UltimateBot(ctk.CTk):
         self.start_time = time.time()
         self.update_timer()
         # ==========================================
+        self.global_loop_current = 1
+        self.global_loop_total = 1
+        self.current_step_name = "boot"
+        self.current_phase_name = "自动开机测试"
+        self.refresh_run_targets()
+        self.start_run_log("boot")
 
-        self.log("====== 开始独立测试自动开机与识别流程 ======")
+        self.log("====== 开始独立测试自动开机与识别流程 ======", step="任务启动")
+        self.log(f"本次详细日志文件: {self.log_file_path}", step="日志初始化", module="system")
         
         def test_runner():
             success = self.restart_game_and_boot(force_test=True)
@@ -3723,7 +3997,8 @@ class FH_UltimateBot(ctk.CTk):
         self.hw_press("up")
         time.sleep(0.4)
         self.hw_press("enter")
-        time.sleep(0.8)
+        if not self.wait_for_share_code_input_ready():
+            return False
 
         code_text = "".join(c for c in self.entry_share.get() if c.isdigit())
         for char in code_text:
@@ -4190,7 +4465,7 @@ class FH_UltimateBot(ctk.CTk):
             return False
 
         self.game_click(pos_bs)
-        time.sleep(1.0)
+        time.sleep(0.2)
         self.hw_press("pagedown", delay=0.15)
         self.log("进入车辆界面...")
         time.sleep(0.5)
@@ -4198,8 +4473,33 @@ class FH_UltimateBot(ctk.CTk):
         while self.cj_counter < target_count:
             if not self.is_running:
                 return False
-            self.log("进入我的车辆.")
-            self.hw_press("enter")
+
+            pos_ds = self.wait_for_any_image_gray(
+                ["DandS-w.png", "DandS-b.png"],
+                region=self.regions["全界面"],
+                threshold=0.75,
+                timeout=20,
+                interval=0.3,
+                fast_mode=True
+            )
+            if not pos_ds:
+                self.log("未找到下载与分享入口")
+                return False
+            self.game_click(pos_ds)
+            time.sleep(1.0)
+
+            pos_choosecar = self.wait_for_any_image_gray(
+                ["choosecar.png", "choosecar-b.png"],
+                region=self.regions["全界面"],
+                threshold=0.75,
+                timeout=20,
+                interval=0.3,
+                fast_mode=True
+            )
+            if not pos_choosecar:
+                self.log("未找到选择车辆入口")
+                return False
+            self.game_click(pos_choosecar)
             time.sleep(2.0)
             self.hw_press("backspace")
             time.sleep(1.0)
@@ -4210,7 +4510,7 @@ class FH_UltimateBot(ctk.CTk):
                     return False
 
                 brand_pos = self.wait_for_any_image_gray(
-                    ["CCbrand.png"],
+                    ["CCbrand.png", "CCbrand-b.png"],
                     region=self.regions["全界面"],
                     threshold=0.75,
                     timeout=0.8,
@@ -4397,6 +4697,282 @@ class FH_UltimateBot(ctk.CTk):
         self.hw_press("esc")
         time.sleep(1.2)
         return True
+    def logic_super_wheelspin_v2(self, target_count):
+        if self.cj_counter >= target_count:
+            return True
+
+        self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+        if not hasattr(self, "memory_car_page"):
+            self.memory_car_page = 0
+
+        self.log("准备验证/进入菜单...")
+        if not self.enter_menu():
+            return False
+
+        self.log("进入车辆与收藏...")
+        self.hw_press("pagedown", delay=0.15)
+        time.sleep(1.0)
+
+        pos_buycar = self.wait_for_image(
+            "BNandUC.png",
+            region=self.regions["左"],
+            threshold=0.70,
+            timeout=15,
+            interval=0.3,
+            fast_mode=True
+        )
+        if not pos_buycar:
+            self.log("未识别到 购买新车与二手车")
+            return False
+
+        self.game_click(pos_buycar)
+        time.sleep(0.8)
+        self.hw_press("enter")
+        time.sleep(5)
+
+        pos_bs = self.wait_for_any_image_gray(
+            ["buyandsell-w.png", "buyandsell-b.png"],
+            region=self.regions["左"],
+            threshold=0.75,
+            timeout=60,
+            interval=0.5,
+            fast_mode=True
+        )
+        if not pos_bs:
+            self.log("未找到购买与出售")
+            return False
+
+        self.game_click(pos_bs)
+        time.sleep(0.2)
+        self.hw_press("pagedown", delay=0.15)
+        self.log("进入车辆界面...")
+        time.sleep(0.5)
+        self.hw_press("down", delay=0.08)
+        time.sleep(0.3)
+        self.hw_press("down", delay=0.08)
+        time.sleep(0.5)
+
+        while self.cj_counter < target_count:
+            if not self.is_running:
+                return False
+
+            self.log("进入设计与喷漆...")
+            self.hw_press("enter")
+            time.sleep(1.0)
+
+            pos_choosecar = self.wait_for_any_image_gray(
+                ["choosecar.png", "choosecar-b.png"],
+                region=self.regions["全界面"],
+                threshold=0.72,
+                timeout=12,
+                interval=0.25,
+                fast_mode=True
+            )
+            if not pos_choosecar:
+                self.log("灰度未找到选择车辆入口，切换彩色匹配继续尝试...")
+                pos_choosecar = self.wait_for_any_image(
+                    ["choosecar.png", "choosecar-b.png"],
+                    region=self.regions["全界面"],
+                    threshold=0.70,
+                    timeout=8,
+                    interval=0.25,
+                    fast_mode=True
+                )
+            if not pos_choosecar:
+                self.log("未找到选择车辆入口")
+                return False
+            self.game_click(pos_choosecar)
+            time.sleep(2.0)
+
+            self.hw_press("backspace")
+            time.sleep(1.0)
+
+            brand_pos = None
+            for _ in range(30):
+                if not self.is_running:
+                    return False
+
+                brand_pos = self.wait_for_any_image_gray(
+                    ["CCbrand.png", "CCbrand-b.png"],
+                    region=self.regions["全界面"],
+                    threshold=0.75,
+                    timeout=0.8,
+                    interval=0.2,
+                    fast_mode=True
+                )
+                if brand_pos:
+                    break
+
+                self.hw_press("up")
+                time.sleep(0.25)
+
+            if not brand_pos:
+                self.log("选品牌失败")
+                return False
+
+            self.game_click(brand_pos)
+            time.sleep(1.0)
+
+            pos_target = None
+            found_car = False
+            start_page = max(0, min(84, int(getattr(self, "memory_car_page", 0))))
+
+            if start_page > 0:
+                self.log(f"沿用本轮记忆：直接从第 {start_page + 1} 页开始找车...")
+                if not self.fast_advance_car_pages(start_page, region=self.regions["全界面"]):
+                    return False
+
+            for page_idx in range(start_page, 85):
+                if not self.is_running:
+                    return False
+
+                if page_idx > start_page:
+                    self.log(f"第 {page_idx + 1} 页搜索前，等待翻页动画稳定...")
+                    self.wait_for_region_stable(
+                        region=self.regions["全界面"],
+                        timeout=2.0,
+                        interval=0.15,
+                        diff_threshold=1.5,
+                        stable_hits=2
+                    )
+
+                for confirm_idx in range(2):
+                    if not self.is_running:
+                        return False
+
+                    pos_target = self.wait_for_image_with_element_multi(
+                        "newCC.png",
+                        "newcartag.png",
+                        region=self.regions["全界面"],
+                        main_threshold=0.75,
+                        like_threshold=0.75,
+                        final_threshold=0.70,
+                        timeout=1.0,
+                        interval=0.2,
+                        fast_mode=True
+                    )
+
+                    if pos_target:
+                        self.game_click(pos_target)
+                        found_car = True
+                        self.memory_car_page = page_idx
+                        self.log(f"锁定目标车辆！当前可见页: {page_idx + 1}")
+                        break
+
+                    if confirm_idx < 1:
+                        self.log(f"第 {page_idx + 1} 页第 {confirm_idx + 1} 次识别未命中，继续复查当前页...")
+                        time.sleep(0.25)
+
+                if found_car:
+                    break
+
+                if page_idx >= 84:
+                    break
+
+                self.log(f"第 {page_idx + 1} 页确认无目标车，翻到下一页继续搜索...")
+                self.hw_press("right", delay=0.08)
+                time.sleep(0.35)
+
+            if not found_car:
+                self.log("列表中未找到目标车辆，重置记忆页码。")
+                self.memory_car_page = 0
+                return False
+
+            self.hw_press("enter")
+            time.sleep(0.2)
+            self.hw_press("esc")
+            time.sleep(1.0)
+
+            pos_sjy = None
+            for _ in range(20):
+                if not self.is_running:
+                    return False
+
+                pos_sjy = self.find_any_image_gray(
+                    ["UandT-w.png", "UandT-b.png"],
+                    region=self.regions["左下"],
+                    threshold=0.70
+                )
+                if pos_sjy:
+                    break
+
+                self.hw_press("esc")
+                self.sleep_ui(0.5)
+
+            if not pos_sjy:
+                self.log("找不到升级与调整")
+                return False
+
+            self.game_click(pos_sjy)
+            self.sleep_ui(0.5)
+
+            pos_cls = self.wait_for_any_image_gray(
+                ["clsldcnw.png", "clsldcnb.png"],
+                region=self.regions["左下"],
+                threshold=0.70,
+                timeout=20
+            )
+            if not pos_cls:
+                self.log("未找到车辆熟练度")
+                return False
+            self.game_click(pos_cls)
+            time.sleep(1.5)
+
+            pos_exp = self.wait_for_any_image(
+                ["EXPwU.png"],
+                region=self.regions["左"],
+                threshold=0.75,
+                timeout=1.5,
+                interval=0.3,
+                fast_mode=True
+            )
+
+            if pos_exp:
+                self.log("该车辆技能已点过，跳过计数")
+            else:
+                time.sleep(1.0)
+                self.hw_press("enter")
+                time.sleep(1.5)
+
+                for dk in self.config["skill_dirs"]:
+                    if not self.is_running:
+                        return False
+                    self.hw_press(dk)
+                    time.sleep(0.2)
+                    self.hw_press("enter")
+                    time.sleep(1.2)
+
+                spne_found = self.find_image_gray("SPNE.png", region=self.regions["全界面"], threshold=0.70)
+
+                if spne_found:
+                    self.log("已无技能点或技能已点完，提前结束抽奖！")
+                    time.sleep(1.0)
+                    self.hw_press("enter")
+                    time.sleep(0.8)
+                    self.hw_press("esc")
+                    time.sleep(1.0)
+                    self.hw_press("esc")
+                    time.sleep(1.0)
+                    self.hw_press("esc")
+                    time.sleep(1.0)
+                    return True
+
+                self.cj_counter += 1
+                self.update_running_ui("超级抽奖", self.cj_counter, target_count)
+
+            self.hw_press("esc")
+            time.sleep(1.2)
+            self.hw_press("esc")
+            time.sleep(0.8)
+            self.hw_press("down", delay=0.08)
+            time.sleep(0.8)
+
+        self.hw_press("esc")
+        time.sleep(1.2)
+        self.hw_press("esc")
+        time.sleep(1.2)
+        return True
+
     # ==========================================
     # --- 模块：移除车辆 ---
     # ==========================================
@@ -4618,7 +5194,10 @@ class FH_UltimateBot(ctk.CTk):
         #筛选
         self.hw_press("y")
         time.sleep(1.0)
-        for _ in range(2):
+        is_winter_season = self.var_winter_season.get() if hasattr(self, "var_winter_season") else self.config.get("is_winter_season", False)
+        filter_down_count = 4 if is_winter_season else 2
+        self.log(f"当前删车筛选模式: {'冬季' if filter_down_count == 4 else '非冬季'}，向下选择 {filter_down_count} 次。")
+        for _ in range(filter_down_count):
             self.hw_press("down", delay=0.06)
             time.sleep(0.2)
         time.sleep(0.5)
@@ -4638,7 +5217,7 @@ class FH_UltimateBot(ctk.CTk):
                 
 
             brand_pos = self.wait_for_any_image_gray(
-                ["CCbrand.png"],
+                ["CCbrand.png", "CCbrand-b.png"],
                 region=self.regions["全界面"],
                 threshold=0.75,
                 timeout=0.8,
