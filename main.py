@@ -5243,7 +5243,7 @@ class FH_UltimateBot(ctk.CTk):
                 time.sleep(0.25)
 
             if brand_pos_retry:
-                self.log("已重新定位到 CCbrand，点击后执行 Enter -> Enter -> Esc，再继续查找 skillcar-rm...")
+                self.log("已重新定位到 CCbrand，点击后进入品牌并执行 Enter -> 上车/确认 -> Esc ...")
                 self.game_click(brand_pos_retry)
                 time.sleep(0.8)
                 self.hw_press("enter")
@@ -5267,27 +5267,26 @@ class FH_UltimateBot(ctk.CTk):
             self.log("找到消耗品车辆，执行点击")
             is_current_skillcar = self.is_current_car_slot_position(pos_skillcar)
             self.log(f"skillcar-rm 命中坐标: {pos_skillcar} | {'当前乘坐车位' if is_current_skillcar else '非当前乘坐车位'}")
+            self.game_click(pos_skillcar)
+            time.sleep(0.6)
             if is_current_skillcar:
-                self.log("命中当前乘坐的 skillcar-rm，直接按 ESC 返回并继续后续流程")
-                self.hw_press("esc")
-                time.sleep(1.5)
+                self.log("命中当前乘坐的 skillcar-rm，点击后直接识别 rc.png")
             else:
-                self.game_click(pos_skillcar)
-                time.sleep(0.6)
                 self.log("命中非当前乘坐的 skillcar-rm，补一次 Enter 进入菜单")
                 self.hw_press("enter")
                 time.sleep(0.8)
-                pos = self.wait_for_image("rc.png", region=self.regions["全界面"], threshold=0.65, timeout=5, interval=0.2, fast_mode=True)
-                if pos:
-                    self.log("找到上车，执行Enter")
-                    self.hw_press("enter")
-                    time.sleep(2.0)
-                else:
-                    self.log("未找到上车，执行两次ESC")
-                    self.hw_press("esc")
-                    time.sleep(1.5)
-                    self.hw_press("esc")
-                    time.sleep(2.0)
+
+            pos = self.wait_for_image("rc.png", region=self.regions["全界面"], threshold=0.65, timeout=5, interval=0.2, fast_mode=True)
+            if pos:
+                self.log("找到上车，执行Enter")
+                self.hw_press("enter")
+                time.sleep(2.0)
+            else:
+                self.log("未找到上车，执行两次ESC")
+                self.hw_press("esc")
+                time.sleep(1.5)
+                self.hw_press("esc")
+                time.sleep(2.0)
         else:
             self.log("未找到消耗品车辆")
 
