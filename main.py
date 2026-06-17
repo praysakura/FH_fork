@@ -4163,7 +4163,7 @@ class FH_UltimateBot(ctk.CTk):
             self.log(f"跑图 {self.race_counter + 1}/{target_count}: 找赛事起点...")
 
             pos = None
-            for _ in range(120):
+            for _ in range(600):
                 if not self.is_running:
                     return False
 
@@ -4222,8 +4222,8 @@ class FH_UltimateBot(ctk.CTk):
                 now = time.time()
                 
                 # 【新增逻辑】：120秒超时防卡死检测
-                if now - race_start_time > 120.0:
-                    self.log("跑图超时(已超过120秒)！触发强制重开赛事逻辑...")
+                if now - race_start_time > 600.0:
+                    self.log("跑图超时(已超过600秒)！触发强制重开赛事逻辑...")
                     timeout_triggered = True
                     break
                 
